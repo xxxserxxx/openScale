@@ -26,6 +26,7 @@ import com.health.openscale.core.datatypes.ScaleUser;
 import com.health.openscale.core.utils.Converters;
 
 import java.util.UUID;
+import java.util.Date;
 
 import timber.log.Timber;
 
@@ -36,6 +37,7 @@ public class BluetoothOneByone extends BluetoothCommunication {
 
     private final UUID CMD_MEASUREMENT_CHARACTERISTIC = BluetoothGattUuid.fromShortCode(0xfff1); // write only
 
+    private DelayedAdd daThread;
 
     public BluetoothOneByone(Context context) {
         super(context);
@@ -49,33 +51,34 @@ public class BluetoothOneByone extends BluetoothCommunication {
     @Override
     protected boolean onNextStep(int stepNr) {
         switch (stepNr) {
-            case 0:
-                setNotificationOn(WEIGHT_MEASUREMENT_SERVICE, WEIGHT_MEASUREMENT_CHARACTERISTIC_BODY_COMPOSITION);
+        case 0:
+            setNotificationOn(WEIGHT_MEASUREMENT_SERVICE, WEIGHT_MEASUREMENT_CHARACTERISTIC_BODY_COMPOSITION);
+            break;
+        case 1:
+            ScaleUser currentUser = OpenScale.getInstance().getSelectedScaleUser();
+            byte unit = 0x00; // kg
+            switch (currentUser.getScaleUnit()) {
+            case LB:
+                unit = 0x01;
                 break;
-            case 1:
-                ScaleUser currentUser = OpenScale.getInstance().getSelectedScaleUser();
-                byte unit = 0x00; // kg
-                switch (currentUser.getScaleUnit()) {
-                    case LB:
-                        unit = 0x01;
-                        break;
-                    case ST:
-                        unit = 0x02;
-                        break;
-                }
-                byte group = 0x01;
-                byte[] magicBytes = {(byte)0xfd, (byte)0x37, unit, group,
-                        (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00,
-                        (byte)0x00, (byte)0x00, (byte)0x00};
-                magicBytes[magicBytes.length - 1] =
-                        xorChecksum(magicBytes, 0, magicBytes.length - 1);
-                writeBytes(WEIGHT_MEASUREMENT_SERVICE, CMD_MEASUREMENT_CHARACTERISTIC, magicBytes);
+            case ST:
+                unit = 0x02;
                 break;
-            case 2:
-                sendMessage(R.string.info_step_on_scale, 0);
-                break;
-            default:
-                return false;
+            }
+            byte group = 0x01;
+            byte[] magicBytes = {(byte)0xfd, (byte)0x37, unit, group,
+                                 (byte)0x00, (byte)0x00, (byte)0x00, (byte)0x00,
+                                 (byte)0x00, (byte)0x00, (byte)0x00
+                                };
+            magicBytes[magicBytes.length - 1] =
+                xorChecksum(magicBytes, 0, magicBytes.length - 1);
+            writeBytes(WEIGHT_MEASUREMENT_SERVICE, CMD_MEASUREMENT_CHARACTERISTIC, magicBytes);
+            break;
+        case 2:
+            sendMessage(R.string.info_step_on_scale, 0);
+            break;
+        default:
+            return false;
         }
 
         return true;
@@ -89,7 +92,7 @@ public class BluetoothOneByone extends BluetoothCommunication {
         }
 
         // if data is valid data
-        if (data.length == 20 && data[0] == (byte)0xcf) {
+        if (data.length == 11 && data[0] == (byte)0xcf) {
             parseBytes(data);
         }
     }
@@ -114,21 +117,21 @@ public class BluetoothOneByone extends BluetoothCommunication {
         }
 
         switch (scaleUser.getActivityLevel()) {
-            case SEDENTARY:
-                peopleType = 0;
-                break;
-            case MILD:
-                peopleType = 0;
-                break;
-            case MODERATE:
-                peopleType = 1;
-                break;
-            case HEAVY:
-                peopleType = 2;
-                break;
-            case EXTREME:
-                peopleType = 2;
-                break;
+        case SEDENTARY:
+            peopleType = 0;
+            break;
+        case MILD:
+            peopleType = 0;
+            break;
+        case MODERATE:
+            peopleType = 1;
+            break;
+        case HEAVY:
+            peopleType = 2;
+            break;
+        case EXTREME:
+            peopleType = 2;
+            break;
         }
 
         OneByoneLib oneByoneLib = new OneByoneLib(sex, scaleUser.getAge(), scaleUser.getBodyHeight(), peopleType);
@@ -143,6 +146,49 @@ public class BluetoothOneByone extends BluetoothCommunication {
 
         Timber.d("scale measurement [%s]", scaleBtData);
 
-        addScaleMeasurement(scaleBtData);
+        // Some scales in this family present a stream of data as they sample.
+        if (daThread != null && daThread.isAlive()) {
+            daThread.setMeasurement(scaleBtData);
+        } else {
+            daThread = new DelayedAdd(scaleBtData);
+            daThread.start();
+        }
+    }
+
+    private class DelayedAdd extends Thread {
+        ScaleMeasurement measurement;
+
+        public DelayedAdd(ScaleMeasurement s) {
+            measurement = s;
+        }
+        public void run() {
+            Date oldMeasurement;
+            synchronized (daThread) {
+                oldMeasurement = measurement.getDateTime();
+            }
+            try {
+                do {
+                    sleep(1000);
+                    synchronized (daThread) {
+                        oldMeasurement = measurement.getDateTime();
+                    }
+                } while (closeTo(new Date(), oldMeasurement));
+            } catch (Exception e) {
+                Timber.d("write delay interruption");
+            }
+            synchronized (daThread) {
+                addScaleMeasurement(measurement);
+                daThread = null;
+            }
+        }
+        public void setMeasurement(ScaleMeasurement s) {
+            synchronized (daThread) {
+                measurement = s;
+            }
+        }
+        // closeTo returns true if date `a` is within 5 seconds of date `b`
+        private boolean closeTo(Date  a, Date b) {
+            return b.getTime() - a.getTime() > 5000;
+        }
     }
 }
