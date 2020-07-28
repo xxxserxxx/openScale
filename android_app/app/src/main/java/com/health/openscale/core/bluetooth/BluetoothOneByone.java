@@ -37,8 +37,6 @@ public class BluetoothOneByone extends BluetoothCommunication {
 
     private final UUID CMD_MEASUREMENT_CHARACTERISTIC = BluetoothGattUuid.fromShortCode(0xfff1); // write only
 
-    private DelayedAdd daThread;
-
     public BluetoothOneByone(Context context) {
         super(context);
     }
@@ -102,6 +100,10 @@ public class BluetoothOneByone extends BluetoothCommunication {
         int impedanceCoeff = Converters.fromUnsignedInt24Le(weightBytes, 5);
         int impedanceValue = weightBytes[5] + weightBytes[6] + weightBytes[7];
 
+        if (impedanceValue == 0) {
+	        return;
+        }
+
         final ScaleUser scaleUser = OpenScale.getInstance().getSelectedScaleUser();
 
         Timber.d("received bytes [%s]", byteInHex(weightBytes));
@@ -147,56 +149,10 @@ public class BluetoothOneByone extends BluetoothCommunication {
         Timber.d("scale measurement [%s]", scaleBtData);
 
     	ScaleMeasurement latest = OpenScale.getInstance().getLastScaleMeasurement();
-    	// If the latest measurement was under a minute ago, and one of the values is different,
-    	// then update the old value. Otherwise, ignore it.
-    	if (scaleBtData.getDateTime().getTime() - latest.getDateTime().getTime() < 60000) {
-	    	if (scaleBtData.getWeight() != latest.getWeight() ||
-	    	    scaleBtData.getFat() != latest.getFat() ||
-	    	    scaleBtData.getWater() != latest.getWater() ||
-	    	    scaleBtData.getBone() != latest.getBone() ||
-	    	    scaleBtData.getVisceralFat() != latest.getVisceralFat() ||
-	    	    scaleBtData.getMuscle() != latest.getMuscle()) {
-		    	    latest.merge(scaleBtData);
-		    	    OpenScale.getInstance().updateScaleMeasurement(latest);
-    	        }
-    	        return;
+    	// If the latest measurement was under a second ago, ignore it.
+    	if (scaleBtData.getDateTime().getTime() - latest.getDateTime().getTime() < 3000) {
+    	    return;
     	}
         addScaleMeasurement(scaleBtData);
-    }
-
-    private class DelayedAdd extends Thread {
-        ScaleMeasurement measurement;
-
-        public DelayedAdd(ScaleMeasurement s) {
-            measurement = s;
-        }
-        public void run() {
-            Date oldMeasurement;
-            synchronized (daThread) {
-                oldMeasurement = measurement.getDateTime();
-            }
-            try {
-                do {
-                    sleep(1000);
-                    synchronized (daThread) {
-                        oldMeasurement = measurement.getDateTime();
-                    }
-                } while (closeTo(new Date(), oldMeasurement));
-            } catch (Exception e) {
-                Timber.d("write delay interruption");
-            }
-            synchronized (daThread) {
-                daThread = null;
-            }
-        }
-        public void setMeasurement(ScaleMeasurement s) {
-            synchronized (daThread) {
-                measurement = s;
-            }
-        }
-        // closeTo returns true if date `a` is within 5 seconds of date `b`
-        private boolean closeTo(Date  a, Date b) {
-            return b.getTime() - a.getTime() > 5000;
-        }
     }
 }
