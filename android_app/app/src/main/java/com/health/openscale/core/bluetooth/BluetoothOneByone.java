@@ -146,13 +146,22 @@ public class BluetoothOneByone extends BluetoothCommunication {
 
         Timber.d("scale measurement [%s]", scaleBtData);
 
-        // Some scales in this family present a stream of data as they sample.
-        if (daThread != null && daThread.isAlive()) {
-            daThread.setMeasurement(scaleBtData);
-        } else {
-            daThread = new DelayedAdd(scaleBtData);
-            daThread.start();
-        }
+    	ScaleMeasurement latest = OpenScale.getInstance().getLastScaleMeasurement();
+    	// If the latest measurement was under a minute ago, and one of the values is different,
+    	// then update the old value. Otherwise, ignore it.
+    	if (scaleBtData.getDateTime().getTime() - latest.getDateTime().getTime() < 60000) {
+	    	if (scaleBtData.getWeight() != latest.getWeight() ||
+	    	    scaleBtData.getFat() != latest.getFat() ||
+	    	    scaleBtData.getWater() != latest.getWater() ||
+	    	    scaleBtData.getBone() != latest.getBone() ||
+	    	    scaleBtData.getVisceralFat() != latest.getVisceralFat() ||
+	    	    scaleBtData.getMuscle() != latest.getMuscle()) {
+		    	    latest.merge(scaleBtData);
+		    	    OpenScale.getInstance().updateScaleMeasurement(latest);
+    	        }
+    	        return;
+    	}
+        addScaleMeasurement(scaleBtData);
     }
 
     private class DelayedAdd extends Thread {
@@ -177,7 +186,6 @@ public class BluetoothOneByone extends BluetoothCommunication {
                 Timber.d("write delay interruption");
             }
             synchronized (daThread) {
-                addScaleMeasurement(measurement);
                 daThread = null;
             }
         }
