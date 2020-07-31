@@ -37,8 +37,6 @@ public class BluetoothOneByone extends BluetoothCommunication {
 
     private final UUID CMD_MEASUREMENT_CHARACTERISTIC = BluetoothGattUuid.fromShortCode(0xfff1); // write only
 
-    private DelayedAdd daThread;
-
     public BluetoothOneByone(Context context) {
         super(context);
     }
@@ -87,17 +85,22 @@ public class BluetoothOneByone extends BluetoothCommunication {
     @Override
     public void onBluetoothNotify(UUID characteristic, byte[] value) {
         final byte[] data = value;
-        if (data == null) {
+        if (data == null || data.length == 0) {
             return;
         }
 
         // if data is valid data
-        if (data.length == 11 && data[0] == (byte)0xcf) {
-            parseBytes(data);
+        if (data[0] == (byte)0xcf) {
+            if (data.length == 20) {
+                parseBytes(data, false);
+            } else if (data.length == 11) {
+                parseBytes(data, true);
+            }
         }
+
     }
 
-    private void parseBytes(byte[] weightBytes) {
+    private void parseBytes(byte[] weightBytes, boolean streamed) {
         float weight = Converters.fromUnsignedInt16Le(weightBytes, 3) / 100.0f;
         int impedanceCoeff = Converters.fromUnsignedInt24Le(weightBytes, 5);
         int impedanceValue = weightBytes[5] + weightBytes[6] + weightBytes[7];
@@ -146,57 +149,31 @@ public class BluetoothOneByone extends BluetoothCommunication {
 
         Timber.d("scale measurement [%s]", scaleBtData);
 
-    	ScaleMeasurement latest = OpenScale.getInstance().getLastScaleMeasurement();
-    	// If the latest measurement was under a minute ago, and one of the values is different,
-    	// then update the old value. Otherwise, ignore it.
-    	if (scaleBtData.getDateTime().getTime() - latest.getDateTime().getTime() < 60000) {
-	    	if (scaleBtData.getWeight() != latest.getWeight() ||
-	    	    scaleBtData.getFat() != latest.getFat() ||
-	    	    scaleBtData.getWater() != latest.getWater() ||
-	    	    scaleBtData.getBone() != latest.getBone() ||
-	    	    scaleBtData.getVisceralFat() != latest.getVisceralFat() ||
-	    	    scaleBtData.getMuscle() != latest.getMuscle()) {
-		    	    latest.merge(scaleBtData);
-		    	    OpenScale.getInstance().updateScaleMeasurement(latest);
-    	        }
-    	        return;
-    	}
-        addScaleMeasurement(scaleBtData);
-    }
-
-    private class DelayedAdd extends Thread {
-        ScaleMeasurement measurement;
-
-        public DelayedAdd(ScaleMeasurement s) {
-            measurement = s;
-        }
-        public void run() {
-            Date oldMeasurement;
-            synchronized (daThread) {
-                oldMeasurement = measurement.getDateTime();
-            }
-            try {
-                do {
-                    sleep(1000);
-                    synchronized (daThread) {
-                        oldMeasurement = measurement.getDateTime();
+	// Some 1byOne models send a continuous stream of measurements to the app. `streamed` will
+	// be set true for these, and this code block tries to ensure only one measurement is
+	// recorded.
+        if (streamed) {
+            ScaleMeasurement latest = OpenScale.getInstance().getLastScaleMeasurement();
+            // If there are no previous measurements, it's a new measurement, so skip all this.
+            if (latest != null && latest.getDateTime() != null) {
+                // If the latest measurement was under a minute ago, then if one of the
+                // measurements is different, update the old value. If no values were different,
+                // ignore the measurement.  If the measurement was over a minute ago, fall
+                // through and add a new measurement.
+                if (scaleBtData.getDateTime().getTime() - latest.getDateTime().getTime() < 60000) {
+                    if (scaleBtData.getWeight() != latest.getWeight() ||
+                            scaleBtData.getFat() != latest.getFat() ||
+                            scaleBtData.getWater() != latest.getWater() ||
+                            scaleBtData.getBone() != latest.getBone() ||
+                            scaleBtData.getVisceralFat() != latest.getVisceralFat() ||
+                            scaleBtData.getMuscle() != latest.getMuscle()) {
+                        latest.merge(scaleBtData);
+                        OpenScale.getInstance().updateScaleMeasurement(latest);
                     }
-                } while (closeTo(new Date(), oldMeasurement));
-            } catch (Exception e) {
-                Timber.d("write delay interruption");
-            }
-            synchronized (daThread) {
-                daThread = null;
+                    return;
+                }
             }
         }
-        public void setMeasurement(ScaleMeasurement s) {
-            synchronized (daThread) {
-                measurement = s;
-            }
-        }
-        // closeTo returns true if date `a` is within 5 seconds of date `b`
-        private boolean closeTo(Date  a, Date b) {
-            return b.getTime() - a.getTime() > 5000;
-        }
+        addScaleMeasurement(scaleBtData);
     }
 }
